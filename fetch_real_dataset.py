@@ -42,14 +42,24 @@ NOTES ON DATA QUALITY
 - TMDB reviews are sparse per movie (many movies have zero), so this can
   take a few minutes and several hundred API calls. TMDB's free tier
   allows ~40 requests per 10 seconds, which this script respects.
+- Unreleased TMDB listings (no release date, or a date in the future)
+  are skipped so the CSV only contains movies that have already come out.
 """
 
 import os
 import csv
 import time
+from datetime import date
+
 import requests
 
-API_KEY = os.environ.get("TMDB_API_KEY", "")  # or paste your key here as a string
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+API_KEY = os.environ.get("TMDB_API_KEY", "")  # set in .env — never commit the real key
 BASE_URL = "https://api.themoviedb.org/3"
 TARGET_ROWS = 1000
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "data", "movie_reviews.csv")
@@ -85,7 +95,8 @@ def get_genre_map():
 
 
 def iter_candidate_movies(genre_map, max_pages=40):
-    """Yield popular + top-rated movies across many pages for variety."""
+    """Yield popular + top-rated movies that have already been released."""
+    today = date.today().isoformat()
     seen_ids = set()
     for endpoint in ["/movie/popular", "/movie/top_rated"]:
         for page in range(1, max_pages + 1):
@@ -102,15 +113,22 @@ def iter_candidate_movies(genre_map, max_pages=40):
                 if m["id"] in seen_ids:
                     continue
                 seen_ids.add(m["id"])
+                if m.get("adult"):
+                    continue
+                release_date = (m.get("release_date") or "").strip()
+                if len(release_date) < 10 or release_date > today:
+                    continue  # skip unreleased / undated TMDB listings
+                if int(m.get("vote_count") or 0) < 50:
+                    continue  # skip stubs with no real audience yet
                 genre_names = [genre_map.get(gid, "") for gid in m.get("genre_ids", [])]
                 genre_names = [g for g in genre_names if g]
-                if not genre_names or not m.get("release_date"):
+                if not genre_names:
                     continue
                 yield {
                     "id": m["id"],
                     "title": m["title"],
                     "genre": genre_names[0],
-                    "year": m["release_date"][:4],
+                    "year": release_date[:4],
                 }
 
 

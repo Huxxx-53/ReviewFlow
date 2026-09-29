@@ -2,29 +2,48 @@
 
 CS 315 – Application Development and Emerging Technologies · Activity 3
 
-A Streamlit app that loads a movie-reviews dataset, uses a GenAI API (Groq
-or OpenAI) to classify review sentiment and extract keywords, visualizes
-results with Plotly and Altair, and includes a chatbot (with a "thinking"
-indicator) for asking questions about the data.
+**TMDB Movie Dataset Analysis + Dataset-Grounded Chatbot**
+
+- **TMDB** is the source of truth for all stats, charts, and answers.
+- **Groq** is used only on the server to phrase chatbot replies from retrieved dataset facts.
+- The Groq API key stays in a server-side `.env` file — users never paste a key in the UI.
 
 ## Project structure
 
 ```
 genai-movie-app/
-├── app.py
-├── gen_dataset.py
+├── app.py                 # Streamlit app (analysis + chatbot)
+├── clean_dataset.py       # Validate / dedupe the TMDB CSV
+├── fetch_real_dataset.py  # Pull real reviews from TMDB
 ├── requirements.txt
+├── .env.example           # Template for server-side secrets
+├── .gitignore
 ├── README.md
 └── data/
-    └── movie_reviews.csv
+    └── movie_reviews.csv  # Validated TMDB reviews (≥ 520 rows)
 ```
 
 ## 1. Setup
 
 ```bash
 python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
+venv\Scripts\activate          # Mac/Linux: source venv/bin/activate
 pip install -r requirements.txt
+copy .env.example .env         # Mac/Linux: cp .env.example .env
+```
+
+Edit `.env` and set:
+
+```
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+Get a free Groq key at https://console.groq.com/keys (no credit card).
+
+Optional (only to re-fetch TMDB data):
+
+```
+TMDB_API_KEY=your_tmdb_api_key_here
 ```
 
 ## 2. Run locally
@@ -33,92 +52,65 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-**Get a free API key (Groq, recommended):**
-1. Go to https://console.groq.com/keys and create a key (no credit card).
-2. Paste it into the sidebar's "Groq API key" field, keeping the provider
-   dropdown on **"Groq (free)"**.
-
-Without a key, the app still runs using an offline rating/word-frequency
-fallback so the interface can be demoed.
+No API key fields appear in the browser. The backend reads `GROQ_API_KEY` from `.env`
+(or from Streamlit Cloud secrets).
 
 ## 3. What it does
 
-The app is organized into four tabs:
+Three tabs:
 
-1. **📋 Data** — summary metrics (total/filtered reviews, unique movies,
-   average rating) and the full reviews table, filterable by genre, release
-   year, and rating range from the sidebar.
-2. **🤖 Run Analysis** — sends a chosen sample of the filtered reviews to
-   the GenAI model in a single combined call per review, returning both a
-   sentiment label (Positive/Neutral/Negative) and 3–5 keywords/phrases
-   (e.g. "slow pacing", "great acting"). A sample-size control in the
-   sidebar keeps you within free-tier rate limits on large datasets.
-3. **📈 Charts** — a Plotly sentiment-distribution chart, an Altair
-   sentiment-by-genre chart, a rating-over-time line chart, and a
-   keyword-frequency chart with per-movie keyword tags.
-4. **💬 Chatbot** — ask natural-language questions about the analyzed
-   reviews. Shows a "🤖 Thinking..." indicator while waiting on the model.
+1. **📋 Data** — metrics and the filtered TMDB review table (genre / year / rating filters).
+2. **📊 Analysis** — click **Analyze** to run:
+   - Progress: Loading Data → Validating → Analyzing → Extracting Keywords → Generating Insights → Complete
+   - Sections: Dataset Overview, Rating Analysis, Genre Analysis, Sentiment Analysis,
+     Keyword Extraction, Key Insights
+   - Full-dataset statistics stay accurate; a random sample is only used for the preview table.
+3. **💬 Chatbot** — dataset-only Q&A:
+   - **User Question → Search/Query Dataset → Retrieve Relevant Data → Groq Generates Answer**
+   - No general knowledge or web search. If data is missing:
+     *"I couldn't find that information in the current TMDB dataset."*
 
-## 4. Deploy to Streamlit Community Cloud
+Sentiment labels (with color + text):
 
-1. Push this folder to a public GitHub repository.
-2. Go to https://share.streamlit.io and click **New app**.
-3. Point it at your repo, branch, and `app.py`.
-4. Under **Settings → Secrets**, add:
+- 🟢 Positive (rating 7–10)
+- ⚪ Neutral (rating 5–6)
+- 🔴 Negative (rating 1–4)
+
+## 4. Dataset (TMDB)
+
+The shipped CSV is real TMDB user reviews. To refresh or expand it:
+
+```bash
+# set TMDB_API_KEY in .env first
+python fetch_real_dataset.py
+python clean_dataset.py
+```
+
+`clean_dataset.py` removes duplicates / empty / invalid rows and keeps only legitimate
+TMDB records (target: at least 520 rows — never fabricates data).
+
+**Required attribution:** *"This product uses the TMDB API but is not endorsed or
+certified by TMDB."*
+https://www.themoviedb.org/documentation/api/terms-of-use
+
+## 5. Deploy to Streamlit Community Cloud
+
+1. Push this folder to a GitHub repository (`.env` is gitignored — do not commit keys).
+2. Go to https://share.streamlit.io → **New app** → point at `app.py`.
+3. Under **Settings → Secrets**, add:
    ```
    GROQ_API_KEY = "gsk_..."
    ```
-   (or `OPENAI_API_KEY` if you're using OpenAI instead)
-5. Deploy, then copy the app's public URL into your submission document.
+4. Deploy.
 
-## 5. Dataset
+## 6. Data flow
 
-You have two options:
-
-### Option A — Real data (recommended for your citation)
-
-`fetch_real_dataset.py` pulls **real movie titles, real genres, and real
-user-submitted reviews with real numeric ratings** live from
-[TMDB (The Movie Database)](https://www.themoviedb.org/)'s free public
-API. Run it once on your own machine (it needs internet access, which
-this generated project folder does not require otherwise):
-
-```bash
-pip install -r requirements.txt
-export TMDB_API_KEY="your_free_tmdb_key"   # see script header for how to get one
-python fetch_real_dataset.py
 ```
-
-This overwrites `data/movie_reviews.csv` with ~1,000 real reviews across
-real movies, keeping the same column structure the app already expects —
-no changes to `app.py` needed. Every rating in the output is a genuine
-TMDB user rating (reviews without one are skipped, not guessed).
-
-**Required attribution** (per TMDB's terms of use): *"This product uses
-the TMDB API but is not endorsed or certified by TMDB."*
-https://www.themoviedb.org/documentation/api/terms-of-use
-
-### Option B — Synthetic data (default, works offline)
-
-`data/movie_reviews.csv` ships as-is with a **synthetic** dataset (1,000+
-unique rows across 75 fictional films, generated by `gen_dataset.py`) so
-the app runs immediately with no API key or download required. Its
-structure is modeled after real, citable datasets:
-
-- **Large Movie Review Dataset** (Maas, A. L., Daly, R. E., Pham, P. T.,
-  Huang, D., Ng, A. Y., & Potts, C., 2011). *Learning Word Vectors for
-  Sentiment Analysis*, ACL 2011. https://ai.stanford.edu/~amaas/data/sentiment/
-- **Rotten Tomatoes Movie Reviews** (Kaggle).
-  https://www.kaggle.com/datasets/stefanoleone992/rotten-tomatoes-movies-and-critic-reviews-dataset
-
-If you use the synthetic data in your submission, say so explicitly and
-cite it as "a synthetic dataset modeled after [source above]" rather
-than implying it's real — that's what makes your citation legitimate
-either way.
-
-## 6. Next goals (from the assignment)
-
-- Add filters for specific categories (genre/time period) — **done** via
-  the sidebar multiselects and rating slider.
-- Include a chatbot for answering user questions about the dataset —
-  **done**, with a visible "thinking" state while it works.
+Browser (Streamlit UI)
+   │  never sees GROQ_API_KEY
+   ▼
+app.py (server)
+   ├── loads data/movie_reviews.csv  (TMDB source of truth)
+   ├── Analysis: pandas stats + keyword frequency + charts
+   └── Chatbot: query dataframe → evidence facts → Groq (server-side) → answer
+```
