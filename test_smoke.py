@@ -108,6 +108,7 @@ def test_chat_query_via_app_module():
     st.divider = lambda *a, **k: None
     st.metric = lambda *a, **k: None
     st.button = lambda *a, **k: False
+    st.radio = lambda label, options, index=0, **k: options[index]
     st.chat_input = lambda *a, **k: None
     st.chat_message = lambda *a, **k: Ctx()
     st.empty = lambda: Ctx()
@@ -153,11 +154,13 @@ def test_chat_query_via_app_module():
     natural = mod.answer_from_dataset(
         "Could you tell me which one people liked the most?", data
     )
-    assert "### Answer" in natural
+    assert "**Dataset evidence**" in natural
+    assert "### Answer" not in natural
     assert "Genre counts:" not in natural
 
     avg_ans = mod.answer_from_dataset("What is the average rating?", data)
-    assert "### Answer" in avg_ans and "### Relevant Data" in avg_ans and "### Short Insight" in avg_ans
+    assert "**Dataset evidence**" in avg_ans
+    assert "### Relevant Data" not in avg_ans
     assert "average" in avg_ans.lower() and "/ 10" in avg_ans
     assert "Genre counts:" not in avg_ans
     assert "Positive=" not in avg_ans
@@ -167,6 +170,44 @@ def test_chat_query_via_app_module():
     titles = re.findall(r"^\| ([^|]+) \|", high_ans, re.MULTILINE)
     movie_titles = [t.strip() for t in titles if t.strip() not in {"Movie", "---"}]
     assert len(movie_titles) == len(set(movie_titles))
+
+    popularity_data = data.copy()
+    ordered_titles = sorted(data["movie_title"].unique())
+    title_scores = {title: float(index + 1) for index, title in enumerate(ordered_titles)}
+    title_votes = {title: (index + 1) * 100 for index, title in enumerate(ordered_titles)}
+    popularity_data["tmdb_popularity"] = popularity_data["movie_title"].map(title_scores)
+    popularity_data["tmdb_vote_count"] = popularity_data["movie_title"].map(title_votes)
+    horror_movies = mod.unique_movies(
+        popularity_data[popularity_data["genre"].str.lower() == "horror"]
+    )
+    expected_popular = horror_movies.sort_values(
+        ["tmdb_popularity", "tmdb_vote_count"], ascending=[False, False]
+    ).iloc[0]["movie_title"]
+    popular_ans = mod.answer_from_dataset(
+        "What is the most famous horror movie?", popularity_data
+    )
+    assert expected_popular in popular_ans
+    assert "TMDB popularity" in popular_ans
+    assert "not a definitive measure" in popular_ans
+    legacy_data = data.drop(columns=["tmdb_popularity", "tmdb_vote_count"], errors="ignore")
+    assert "TMDB popularity is not present in this CSV yet" in mod.answer_from_dataset(
+        "What is the most famous horror movie?", legacy_data
+    )
+
+    horror_movies = mod.unique_movies(data[data["genre"].str.lower() == "horror"])
+    established_horror = horror_movies[horror_movies["review_count"] >= 5]
+    if not established_horror.empty:
+        horror_movies = established_horror
+    expected_recommendation = horror_movies.sort_values(
+        ["avg_rating", "review_count", "movie_title"],
+        ascending=[False, False, True],
+    ).iloc[0]["movie_title"]
+    recommendation = mod.answer_from_dataset("Recommend me a horror movie", data)
+    assert expected_recommendation in recommendation
+    assert "I recommend" in recommendation
+    assert "Top recommendations" in recommendation
+    assert "**Dataset evidence**" in recommendation
+    assert "There are **" not in recommendation
 
     missing = mod.answer_from_dataset("Which movies were released in 1800?", data)
     assert "couldn't find" in missing.lower() or "no movies" in missing.lower()

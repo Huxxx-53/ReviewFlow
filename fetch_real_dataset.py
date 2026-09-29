@@ -129,6 +129,8 @@ def iter_candidate_movies(genre_map, max_pages=40):
                     "title": m["title"],
                     "genre": genre_names[0],
                     "year": release_date[:4],
+                    "popularity": m.get("popularity"),
+                    "vote_count": m.get("vote_count"),
                 }
 
 
@@ -163,6 +165,7 @@ def save_csv(rows, path):
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "review_id", "movie_title", "genre", "release_year",
+            "tmdb_popularity", "tmdb_vote_count",
             "reviewer", "rating", "review_date", "review_text",
         ])
         writer.writeheader()
@@ -199,6 +202,8 @@ def main():
                 "movie_title": movie["title"],
                 "genre": movie["genre"],
                 "release_year": movie["year"],
+                "tmdb_popularity": movie["popularity"],
+                "tmdb_vote_count": movie["vote_count"],
                 **rev,
             })
             review_id += 1

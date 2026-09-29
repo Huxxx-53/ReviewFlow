@@ -97,6 +97,10 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise SystemExit(f"CSV is missing required columns: {missing}")
+    metric_columns = [
+        column for column in ("tmdb_popularity", "tmdb_vote_count")
+        if column in df.columns
+    ]
 
     before = len(df)
     df = df.copy()
@@ -108,6 +112,8 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df["release_year"] = pd.to_numeric(df["release_year"], errors="coerce")
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
     df["review_date"] = pd.to_datetime(df["review_date"], errors="coerce")
+    for column in metric_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
 
     df = df.dropna(subset=["movie_title", "genre", "release_year", "rating", "review_text"])
     df = df[df["movie_title"].str.len() >= MIN_TITLE_LEN]
@@ -178,7 +184,7 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             "Re-run fetch_real_dataset.py (it now skips unreleased TMDB listings).",
             flush=True,
         )
-    return df[required]
+    return df[required + metric_columns]
 
 
 def main() -> None:

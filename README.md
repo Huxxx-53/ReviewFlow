@@ -89,6 +89,11 @@ python clean_dataset.py
 `clean_dataset.py` removes duplicates / empty / invalid rows and keeps only legitimate
 TMDB records (target: at least 520 rows — never fabricates data).
 
+The fetcher also stores each movie's TMDB popularity score and vote count. The chatbot
+can rank a genre's movies by TMDB popularity, while noting this is a changing platform
+metric rather than a definitive measure of global fame. Existing CSVs need to be
+re-fetched and cleaned before this metric is available in the app.
+
 **Required attribution:** *"This product uses the TMDB API but is not endorsed or
 certified by TMDB."*
 https://www.themoviedb.org/documentation/api/terms-of-use

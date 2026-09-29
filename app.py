@@ -120,6 +120,9 @@ def load_data(path: str) -> pd.DataFrame:
     df["review_date"] = pd.to_datetime(df["review_date"], errors="coerce")
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
     df = df.dropna(subset=["rating"])
+    for column in ("tmdb_popularity", "tmdb_vote_count"):
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
     df = df[df["rating"].between(1, 10)]
     df["rating"] = df["rating"].round().astype(int)
     df["release_year"] = pd.to_numeric(df["release_year"], errors="coerce")
@@ -267,7 +270,7 @@ If a movie, year, or genre is missing here, it simply is not in the loaded datas
 MOVIE_QUESTION_HINTS = re.compile(
     r"\b(movie|movies|film|films|cinema|tmdb|genre|genres|rating|ratings|"
     r"review|reviews|release|year|highest|lowest|average|avg|best|worst|"
-    r"liked|love[d]?|hate[d]?|favorite|favourite|popular|recommend|"
+    r"liked|love[d]?|hate[d]?|favorite|favourite|popular|popularity|famous|fame|recommend|"
     r"watch|watched|watching|how many|top rated|top-rated|common|"
     r"keyword|theme|sentiment|positive|negative|neutral|dataset|"
     r"adventure|animation|romance|fantasy|mystery|crime|family|"
@@ -376,32 +379,51 @@ def unique_movies(df: pd.DataFrame) -> pd.DataFrame:
             columns=["movie_title", "genre", "release_year", "avg_rating",
                      "review_count", "sentiment"]
         )
+    aggregations = {
+        "genre": ("genre", "first"),
+        "release_year": ("release_year", "first"),
+        "avg_rating": ("rating", "mean"),
+        "review_count": ("review_text", "size"),
+        "sentiment": ("sentiment", _majority_sentiment),
+    }
+    for column in ("tmdb_popularity", "tmdb_vote_count"):
+        if column in df.columns:
+            aggregations[column] = (column, "max")
     grouped = (
         df.groupby("movie_title", as_index=False)
-        .agg(
-            genre=("genre", "first"),
-            release_year=("release_year", "first"),
-            avg_rating=("rating", "mean"),
-            review_count=("review_text", "size"),
-            sentiment=("sentiment", _majority_sentiment),
-        )
+        .agg(**aggregations)
     )
     grouped["release_year"] = grouped["release_year"].astype(int)
     grouped["avg_rating"] = grouped["avg_rating"].round(2)
     return grouped
 
 
-def _movies_to_table(movies: pd.DataFrame, limit: int = 10) -> str:
+def _movies_to_table(
+    movies: pd.DataFrame, limit: int = 10, show_popularity: bool = False
+) -> str:
     if movies.empty:
         return "_No matching movies._"
-    rows = ["| Movie | Year | Genre | Avg. rating | Reviews | Sentiment |",
-            "| --- | --- | --- | --- | --- | --- |"]
+    headers = ["Movie", "Year", "Genre"]
+    separators = ["---"] * 3
+    if show_popularity:
+        headers.extend(["TMDB popularity", "TMDB votes"])
+        separators.extend(["---:", "---:"])
+    headers.extend(["Avg. rating", "Reviews", "Sentiment"])
+    separators.extend(["---:", "---:", "---"])
+    rows = ["| " + " | ".join(headers) + " |", "| " + " | ".join(separators) + " |"]
     for _, r in movies.head(limit).iterrows():
-        rows.append(
-            f"| {r['movie_title']} | {int(r['release_year'])} | {r['genre']} | "
-            f"{float(r['avg_rating']):.1f} / 10 | {int(r['review_count'])} | "
-            f"{sentiment_badge(str(r['sentiment']))} |"
-        )
+        values = [str(r["movie_title"]), str(int(r["release_year"])), str(r["genre"])]
+        if show_popularity:
+            values.extend([
+                f"{float(r['tmdb_popularity']):.2f}",
+                str(int(r["tmdb_vote_count"])) if pd.notna(r.get("tmdb_vote_count")) else "n/a",
+            ])
+        values.extend([
+            f"{float(r['avg_rating']):.1f} / 10",
+            str(int(r["review_count"])),
+            sentiment_badge(str(r["sentiment"])),
+        ])
+        rows.append("| " + " | ".join(values) + " |")
     extra = len(movies) - limit
     md = "\n".join(rows)
     if extra > 0:
@@ -489,6 +511,16 @@ def query_dataset(question: str, data: pd.DataFrame) -> dict:
     asked_common_genre = any(
         p in q_lower for p in ("common genre", "most common genre", "popular genre")
     )
+    asked_popularity = any(term in q_lower for term in ("famous", "fame", "popularity")) or (
+        "popular" in q_lower and not asked_common_genre
+    )
+    asked_recommendation = any(
+        phrase in q_lower
+        for phrase in (
+            "recommend", "recommendation", "suggest", "suggestion",
+            "what should i watch", "what should we watch", "pick a movie",
+        )
+    )
 
     genre_counts = data.groupby("genre")["movie_title"].nunique().sort_values(ascending=False)
     matched_genres = [g for g in genre_counts.index if g.lower() in q_lower]
@@ -501,7 +533,71 @@ def query_dataset(question: str, data: pd.DataFrame) -> dict:
         or (year_match is not None and payload["related"])
     )
 
-    if asked_highest:
+    if asked_popularity:
+        popularity_data = data
+        if matched_genres:
+            payload["focus_genre"] = matched_genres[0]
+            popularity_data = popularity_data[
+                popularity_data["genre"] == payload["focus_genre"]
+            ]
+        if year_question and year_match:
+            payload["focus_year"] = int(year_match.group(1))
+            popularity_data = popularity_data[
+                popularity_data["release_year"] == payload["focus_year"]
+            ]
+        payload["related"] = True
+        if "tmdb_popularity" not in popularity_data.columns:
+            payload["not_found"] = True
+            payload["missing_reason"] = (
+                "TMDB popularity is not present in this CSV yet. Re-fetch the dataset "
+                "with fetch_real_dataset.py, then run clean_dataset.py."
+            )
+        else:
+            popularity_movies = unique_movies(popularity_data).dropna(
+                subset=["tmdb_popularity"]
+            )
+            if popularity_movies.empty:
+                payload["not_found"] = True
+                payload["missing_reason"] = (
+                    "No TMDB popularity values are available for the matching movies."
+                )
+            else:
+                sort_columns = ["tmdb_popularity"]
+                if "tmdb_vote_count" in popularity_movies.columns:
+                    sort_columns.append("tmdb_vote_count")
+                payload["intent"] = "popularity"
+                payload["movies"] = popularity_movies.sort_values(
+                    sort_columns, ascending=[False] * len(sort_columns)
+                ).head(8)
+                payload["snapshot"] = _dataset_snapshot(popularity_data)
+    elif asked_recommendation:
+        recommendation_data = data
+        if matched_genres:
+            payload["focus_genre"] = matched_genres[0]
+            recommendation_data = recommendation_data[
+                recommendation_data["genre"] == payload["focus_genre"]
+            ]
+        if year_question and year_match:
+            payload["focus_year"] = int(year_match.group(1))
+            recommendation_data = recommendation_data[
+                recommendation_data["release_year"] == payload["focus_year"]
+            ]
+        payload["related"] = True
+        recommendation_movies = unique_movies(recommendation_data)
+        if recommendation_movies.empty:
+            payload["not_found"] = True
+            payload["missing_reason"] = "No movies match those recommendation filters."
+        else:
+            established = recommendation_movies[recommendation_movies["review_count"] >= 5]
+            if not established.empty:
+                recommendation_movies = established
+            payload["intent"] = "recommendation"
+            payload["movies"] = recommendation_movies.sort_values(
+                ["avg_rating", "review_count", "movie_title"],
+                ascending=[False, False, True],
+            ).head(3)
+            payload["snapshot"] = _dataset_snapshot(recommendation_data)
+    elif asked_highest:
         payload["intent"] = "highest"
         payload["movies"] = movies.sort_values(
             ["avg_rating", "review_count", "movie_title"],
@@ -584,7 +680,30 @@ def _local_answer_and_insight(question: str, payload: dict, data: pd.DataFrame) 
     n_reviews = snap.get("n_reviews", 0)
     avg = snap.get("avg_rating", 0)
 
-    if intent == "highest" and not movies.empty:
+    if intent == "popularity" and not movies.empty:
+        top = movies.iloc[0]
+        scope = f"the {payload['focus_genre']} movies" if payload.get("focus_genre") else "movies"
+        answer = (
+            f"By TMDB's popularity score, **{top['movie_title']}** ranks highest among "
+            f"{scope} in this dataset, with a score of **{top['tmdb_popularity']:.2f}**."
+        )
+        insight = (
+            "TMDB popularity is a changing platform metric, not a definitive measure of "
+            "overall fame."
+        )
+    elif intent == "recommendation" and not movies.empty:
+        top = movies.iloc[0]
+        scope = f" in {payload['focus_genre']}" if payload.get("focus_genre") else ""
+        answer = (
+            f"I recommend **{top['movie_title']}**{scope}. It averages "
+            f"**{top['avg_rating']:.1f} / 10** from **{int(top['review_count'])}** "
+            "reviews in this dataset."
+        )
+        insight = (
+            "Recommendations are ranked by average TMDB review rating, prioritizing "
+            "movies with at least five collected reviews when available."
+        )
+    elif intent == "highest" and not movies.empty:
         top = movies.iloc[0]
         answer = (
             f"**{top['movie_title']}** is the highest-rated unique movie in this view, "
@@ -664,7 +783,21 @@ def _relevant_data_markdown(payload: dict, data: pd.DataFrame) -> str:
     movies: pd.DataFrame = payload.get("movies", pd.DataFrame())
     intent = payload.get("intent")
 
-    if intent == "genre" and payload.get("focus_genre"):
+    if intent == "recommendation":
+        parts.append("- Ranking: average TMDB review rating, with review count used as a confidence signal")
+        if payload.get("focus_genre"):
+            parts.append(f"- Genre: **{payload['focus_genre']}**")
+        if payload.get("focus_year") is not None:
+            parts.append(f"- Release year: **{payload['focus_year']}**")
+        parts.append(f"- Matching movies: **{snap.get('n_movies', 0)}**")
+    elif intent == "popularity":
+        parts.append("- Ranking metric: TMDB popularity score (not a direct measure of global fame)")
+        if payload.get("focus_genre"):
+            parts.append(f"- Genre: **{payload['focus_genre']}**")
+        if payload.get("focus_year") is not None:
+            parts.append(f"- Release year: **{payload['focus_year']}**")
+        parts.append(f"- Matching movies: **{snap.get('n_movies', 0)}**")
+    elif intent == "genre" and payload.get("focus_genre"):
         g = payload["focus_genre"]
         parts.append(
             f"- Unique **{g}** movies: **{snap.get('n_movies', 0)}**"
@@ -709,13 +842,19 @@ def _relevant_data_markdown(payload: dict, data: pd.DataFrame) -> str:
 
     if intent != "keywords" and not movies.empty:
         heading = "Unique movies"
-        if intent == "highest":
+        if intent == "recommendation":
+            heading = "Top recommendations"
+        elif intent == "popularity":
+            heading = "Movies ranked by TMDB popularity"
+        elif intent == "highest":
             heading = "Highest-rated unique movies"
         elif intent == "lowest":
             heading = "Lowest-rated unique movies"
         parts.append("")
         parts.append(f"**{heading}**")
-        parts.append(_movies_to_table(movies, limit=10))
+        parts.append(
+            _movies_to_table(movies, limit=10, show_popularity=intent == "popularity")
+        )
 
     reviews = payload.get("reviews", pd.DataFrame())
     if payload.get("want_reviews") and isinstance(reviews, pd.DataFrame) and not reviews.empty:
@@ -736,12 +875,10 @@ def format_chat_reply(question: str, payload: dict, data: pd.DataFrame) -> str:
     if payload.get("not_found"):
         reason = payload.get("missing_reason") or "Nothing matched this request."
         return (
-            "### Answer\n"
-            "I couldn't find that information in the current TMDB dataset.\n\n"
-            "### Relevant Data\n"
+            "I can't determine that from the current TMDB dataset.\n\n"
+            "**What is missing**\n"
             f"- {reason}\n\n"
-            "### Short Insight\n"
-            "The chatbot only reports movies that actually appear in the loaded TMDB reviews."
+            "I can answer using only the movies and reviews available in this dataset."
         )
 
     answer, insight = _local_answer_and_insight(question, payload, data)
@@ -750,9 +887,9 @@ def format_chat_reply(question: str, payload: dict, data: pd.DataFrame) -> str:
     if groq_bits:
         answer, insight = groq_bits
     return (
-        f"### Answer\n{answer.strip()}\n\n"
-        f"### Relevant Data\n{relevant.strip()}\n\n"
-        f"### Short Insight\n{insight.strip()}"
+        f"{answer.strip()}\n\n"
+        f"**Dataset evidence**\n{relevant.strip()}\n\n"
+        f"_{insight.strip()}_"
     )
 
 
@@ -764,9 +901,11 @@ def _groq_polish_answer_insight(
     if client is None:
         return None
     system = (
-        "You help a student present TMDB movie-dataset findings. "
-        "Rewrite ONLY the Answer (2 short sentences) and Short Insight (1 sentence). "
+        "You are a conversational assistant answering questions about a TMDB movie dataset. "
+        "Rewrite ONLY the Answer (1-3 natural, direct sentences) and Short Insight (1 concise sentence). "
         "Use ONLY the facts already given. Do not invent movies, years, or numbers. "
+        "Answer the question directly, use a friendly conversational tone, and avoid canned phrasing. "
+        "Preserve the scope and caveats of any metric; TMDB popularity is not global fame. "
         "Do not dump raw field names like Positive=661 or Genre counts:. "
         "Use 🟢 Positive, ⚪ Neutral, and 🔴 Negative when sentiment is mentioned. "
         "If facts are insufficient, reply with NOT_FOUND. "
